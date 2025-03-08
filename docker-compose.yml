@@ -1,12 +1,16 @@
 volumes:
-  certs:
-    driver: local
-  esdata01:
-    driver: local
-  kibanadata:
-    driver: local
-  metricbeatdata01:
-    driver: local
+ certs:
+   driver: local
+ esdata01:
+   driver: local
+ kibanadata:
+   driver: local
+ metricbeatdata01:
+   driver: local
+ filebeatdata01:
+   driver: local
+ logstashdata01:
+   driver: local
 
 networks:
   default:
@@ -24,8 +28,8 @@ services:
         if [ x${ELASTIC_PASSWORD} == x ]; then
           echo "Set the ELASTIC_PASSWORD environment variable in the .env file";
           exit 1;
-        elif [ x${KIBANA_PASSWORD} == x ]; then
-          echo "Set the KIBANA_PASSWORD environment variable in the .env file";
+        elif [ x${kibana_PASSWORD} == x ]; then
+          echo "Set the kibana_PASSWORD environment variable in the .env file";
           exit 1;
         fi;
         if [ ! -f config/certs/ca.zip ]; then
@@ -60,7 +64,7 @@ services:
         echo "Waiting for Elasticsearch availability";
         until curl -s --cacert config/certs/ca/ca.crt https://es01:9200 | grep -q "missing authentication credentials"; do sleep 30; done;
         echo "Setting kibana_system password";
-        until curl -s -X POST --cacert config/certs/ca/ca.crt -u "elastic:${ELASTIC_PASSWORD}" -H "Content-Type: application/json" https://es01:9200/_security/user/kibana_system/_password -d "{\"password\":\"${KIBANA_PASSWORD}\"}" | grep -q "^{}"; do sleep 10; done;
+        until curl -s -X POST --cacert config/certs/ca/ca.crt -u "elastic:${ELASTIC_PASSWORD}" -H "Content-Type: application/json" https://es01:9200/_security/user/kibana_system/_password -d "{\"password\":\"${kibana_PASSWORD}\"}" | grep -q "^{}"; do sleep 10; done;
         echo "All done!";
       '
     healthcheck:
@@ -104,15 +108,15 @@ services:
          "curl -s --cacert config/certs/ca/ca.crt https://localhost:9200 | grep -q 'missing authentication credentials'",
        ]
       
-  kib01:
+  kibana:
     depends_on:
       es01:
         condition: service_healthy
     image: docker.elastic.co/kibana/kibana:${STACK_VERSION}
-    container_name: kib01
+    container_name: kibana
     restart: always
     ports:
-      - ${KIBANA_PORT}:5601
+      - ${kibana_PORT}:5601
     volumes:
       - certs:/usr/share/kibana/config/certs
       - kibanadata:/usr/share/kibana/data
@@ -120,7 +124,7 @@ services:
       - SERVERNAME=kibana
       - ELASTICSEARCH_HOSTS=https://es01:9200
       - ELASTICSEARCH_USERNAME=kibana_system
-      - ELASTICSEARCH_PASSWORD=${KIBANA_PASSWORD}
+      - ELASTICSEARCH_PASSWORD=${kibana_PASSWORD}
       - ELASTICSEARCH_SSL_CERTIFICATEAUTHORITIES=config/certs/ca/ca.crt
       - XPACK_SECURITY_ENCRYPTIONKEY=${ENCRYPTION_KEY}
       - XPACK_ENCRYPTEDSAVEDOBJECTS_ENCRYPTIONKEY=${ENCRYPTION_KEY}
@@ -139,7 +143,7 @@ services:
     depends_on:
       es01:
         condition: service_healthy
-      kib01:
+      kibana:
         condition: service_healthy
     image: docker.elastic.co/beats/metricbeat:${STACK_VERSION}
     user: root
@@ -155,5 +159,46 @@ services:
       - ELASTIC_USER=elastic
       - ELASTIC_PASSWORD=${ELASTIC_PASSWORD}
       - ELASTIC_HOSTS=https://es01:9200
-      - KIBANA_HOSTS=http://kibana:5601
+      - kibana_HOSTS=http://kibana:5601
       - LOGSTASH_HOSTS=http://logstash01:9600
+
+  filebeat01:
+   depends_on:
+     es01:
+       condition: service_healthy
+   image: docker.elastic.co/beats/filebeat:${STACK_VERSION}
+   user: root
+   volumes:
+     - certs:/usr/share/filebeat/certs
+     - filebeatdata01:/usr/share/filebeat/data
+     - "./filebeat_ingest_data/:/usr/share/filebeat/ingest_data/"
+     - "./filebeat.yml:/usr/share/filebeat/filebeat.yml:ro"
+     - "/var/lib/docker/containers:/var/lib/docker/containers:ro"
+     - "/var/run/docker.sock:/var/run/docker.sock:ro"
+   environment:
+     - ELASTIC_USER=elastic
+     - ELASTIC_PASSWORD=${ELASTIC_PASSWORD}
+     - ELASTIC_HOSTS=https://es01:9200
+     - KIBANA_HOSTS=http://kibana:5601
+     - LOGSTASH_HOSTS=http://logstash01:9600
+
+  logstash01:
+   depends_on:
+     es01:
+       condition: service_healthy
+     kibana:
+       condition: service_healthy
+   image: docker.elastic.co/logstash/logstash:${STACK_VERSION}
+   labels:
+     co.elastic.logs/module: logstash
+   user: root
+   volumes:
+     - certs:/usr/share/logstash/certs
+     - logstashdata01:/usr/share/logstash/data
+     - "./logstash_ingest_data/:/usr/share/logstash/ingest_data/"
+     - "./logstash.conf:/usr/share/logstash/pipeline/logstash.conf:ro"
+   environment:
+     - xpack.monitoring.enabled=false
+     - ELASTIC_USER=elastic
+     - ELASTIC_PASSWORD=${ELASTIC_PASSWORD}
+     - ELASTIC_HOSTS=https://es01:9200
